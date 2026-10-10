@@ -1,0 +1,4 @@
+neatlogs
+# Add when the Claude planner is wired in (also traces the LLM calls):
+# neatlogs[anthropic]
+# anthropic
