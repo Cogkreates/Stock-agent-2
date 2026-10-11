@@ -2,10 +2,11 @@
 
 Tracing turns on only when the `neatlogs` package is installed AND
 NEATLOGS_API_KEY is set. Otherwise every helper here is a no-op, so the demo
-still runs anywhere. Span kinds follow the neatlogs Python SDK docs.
+still runs anywhere. Works with older and newer versions of the SDK.
 """
 import functools
 import os
+import sys
 
 try:
     import neatlogs
@@ -19,23 +20,26 @@ def init(workflow_name="stock-agent"):
     """Call once at startup, before running the agent."""
     global ENABLED
     key = os.environ.get("NEATLOGS_API_KEY")
-    if neatlogs is not None and key:
-        neatlogs.init(
-            api_key=key,
-            # Regional ingest base URL (no /v1/traces). EU projects use https://eu.ingest.neatlogs.com
-            endpoint=os.environ.get("NEATLOGS_ENDPOINT", "https://ingest.neatlogs.com"),
-            workflow_name=workflow_name,
-            capture_logs=True,
-        )
-        ENABLED = True
-    return ENABLED
+    if neatlogs is None or not key:
+        return False
+    kwargs = {"api_key": key, "workflow_name": workflow_name, "capture_logs": True}
+    endpoint = os.environ.get("NEATLOGS_ENDPOINT")   # only needed for EU projects
+    if endpoint:
+        kwargs["endpoint"] = endpoint
+    try:
+        neatlogs.init(**kwargs)
+    except TypeError:
+        # Older SDK without some options: retry with the basics (default endpoint).
+        neatlogs.init(api_key=key, workflow_name=workflow_name)
+    ENABLED = True
+    return True
 
 
 def traced(kind, name=None, **span_kwargs):
     """Decorator: record the function as a neatlogs span of the given kind.
 
     Wrapping happens at call time, so it is safe to apply before init().
-    Examples: traced("TOOL", tool_name="place_order"), traced("AGENT", role=..., goal=...)
+    If neatlogs rejects the span options, the function just runs untraced.
     """
     def deco(fn):
         state = {}
@@ -45,7 +49,11 @@ def traced(kind, name=None, **span_kwargs):
             if not ENABLED:
                 return fn(*args, **kwargs)
             if "span_fn" not in state:
-                state["span_fn"] = neatlogs.span(kind=kind, name=name or fn.__name__, **span_kwargs)(fn)
+                try:
+                    state["span_fn"] = neatlogs.span(kind=kind, name=name or fn.__name__, **span_kwargs)(fn)
+                except Exception as e:
+                    print(f"[tracing] cannot trace {fn.__name__}: {e}", file=sys.stderr)
+                    state["span_fn"] = fn
             return state["span_fn"](*args, **kwargs)
         return wrapper
     return deco
@@ -53,12 +61,17 @@ def traced(kind, name=None, **span_kwargs):
 
 def log(template, level="info", **data):
     """Structured log line attached to the active span (dropped outside a span)."""
-    if ENABLED:
-        neatlogs.log(template, level=level, **data)
+    if ENABLED and hasattr(neatlogs, "log"):
+        try:
+            neatlogs.log(template, level=level, **data)
+        except Exception:
+            pass
 
 
 def shutdown():
     """Flush and stop the exporter. Call at the end of the script."""
     if ENABLED:
-        neatlogs.flush()
-        neatlogs.shutdown()
+        if hasattr(neatlogs, "flush"):
+            neatlogs.flush()
+        if hasattr(neatlogs, "shutdown"):
+            neatlogs.shutdown()
