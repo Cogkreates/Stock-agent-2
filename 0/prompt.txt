@@ -1,0 +1,1 @@
+Write test_agent.py with simple tests for the stock agent: sold-out substitution, price ceiling alert, and payment retry. Run them.
