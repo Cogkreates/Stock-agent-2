@@ -1,9 +1,12 @@
 from models import WantItem
 from mock_supplier import MockSupplier
 from agent import StockAgent
+import os
 import tracing
 
-tracing.init(workflow_name="stock-agent")   # no-op unless neatlogs + NEATLOGS_API_KEY are set
+# STOCK_RECOVERY=off runs the BASELINE (no substitution, no retry) for before/after traces
+RECOVERY = os.environ.get("STOCK_RECOVERY", "on").lower() != "off"
+tracing.init(workflow_name="stock-agent" if RECOVERY else "stock-agent-baseline")
 
 WANTLIST = [
     WantItem("usb-c cable", max_price=4.00, qty=20),
@@ -30,15 +33,18 @@ def approve(item, qty, cost):
 
 
 agent = StockAgent(MockSupplier(SCRIPT), WANTLIST, budget=300.0, approval_threshold=50.0,
-                   approve_fn=approve, notify_fn=lambda m: print(f"           >> NOTIFY: {m}"))
+                   approve_fn=approve, notify_fn=lambda m: print(f"           >> NOTIFY: {m}"),
+                   recovery=RECOVERY)
 
 
-@tracing.traced("WORKFLOW", name="stock_agent_run")
+@tracing.traced("WORKFLOW", name="stock_agent_run" if RECOVERY else "stock_agent_baseline_run")
 def run(ticks=7):
     for _ in range(ticks):
         agent.run_tick()
+    return {"mode": "recovery" if RECOVERY else "baseline",
+            "spent": round(agent.spent, 2), "remaining": dict(agent.remaining)}
 
 
-run()
+summary = run()
 tracing.shutdown()
 print(f"\nSpent {agent.spent:.2f} of 300.00 | remaining: {agent.remaining}")
