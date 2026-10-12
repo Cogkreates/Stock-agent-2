@@ -4,13 +4,14 @@ from tracing import traced, log as trace_log
 
 class StockAgent:
     def __init__(self, supplier, wantlist, budget, approval_threshold,
-                 approve_fn, notify_fn):
+                 approve_fn, notify_fn, recovery=True):
         self.supplier = supplier
         self.wantlist = wantlist
         self.budget = budget
         self.approval_threshold = approval_threshold   # orders above this need a human OK
         self.approve_fn = approve_fn
         self.notify_fn = notify_fn
+        self.recovery = recovery       # False = baseline run: no substitution, no retry
         self.remaining = {w.name: w.qty for w in wantlist}
         self.spent = 0.0
         self.open_orders = {}          # order_id -> last known shipment stage
@@ -55,11 +56,15 @@ class StockAgent:
                 oid = self.supplier.place_order(item.sku, qty, want.max_price)
                 break
             except SoldOut:
+                if not self.recovery:
+                    return self._alert(item.sku, "sold out, recovery disabled")
                 self._log("RECOVER", item.sku, "sold out during checkout")
                 return self.substitute(want, item.sku) if allow_sub else self._alert(item.sku, "sold out")
             except PriceChanged as e:
                 return self._alert(item.sku, f"price changed to {e.new_price:.2f}, not ordering")
             except PaymentDeclined:
+                if not self.recovery:
+                    return self._alert(item.sku, "payment declined, recovery disabled")
                 self._log("RECOVER", item.sku, f"payment declined (attempt {attempt})")
                 if attempt == 2:
                     return self._alert(item.sku, "payment declined twice, needs user")
